@@ -19,25 +19,32 @@ wss.on('connection', (ws) => {
             console.log(`[USER] ${username} registered`);
             ws.send('CONNECTED\n');
         } 
-        // ✅ НОВОЕ: поддержка аудио по частям
+        // ✅ АУДИО по частям
         else if (text.startsWith('AUDIO_START:') || 
                  text.startsWith('AUDIO_CHUNK:') || 
                  text.startsWith('AUDIO_END')) {
             console.log(`[AUDIO] Forwarding: ${text.substring(0, 50)}...`);
             clients.forEach((client, name) => {
                 if (client.ws.readyState === WebSocket.OPEN && name !== username) {
-                    client.ws.send(message);  // ✅ Отправляем оригинальное сообщение
-                }
-            });
-        } 
-        else if (text.startsWith('MSG:')) {
-            const msg = text.substring(4);
-            console.log(`[MSG] ${username}: ${msg.substring(0, 50)}...`);
-            clients.forEach((client, name) => {
-                if (client.ws.readyState === WebSocket.OPEN && name !== username) {
                     client.ws.send(message);
                 }
             });
+        } 
+        // ✅ ТЕКСТ с логированием ретрансляции
+        else if (text.startsWith('MSG:')) {
+            const msg = text.substring(4);
+            console.log(`[MSG] ${username}: ${msg.substring(0, 50)}...`);
+            let forwarded = false;
+            clients.forEach((client, name) => {
+                if (client.ws.readyState === WebSocket.OPEN && name !== username) {
+                    console.log(`[MSG] Forwarding to ${name}`);  // ✅ НОВАЯ СТРОКА
+                    client.ws.send(message);
+                    forwarded = true;
+                }
+            });
+            if (!forwarded) {
+                console.log(`[MSG] No other clients to forward to`);  // ✅ ДИАГНОСТИКА
+            }
         }
     });
 
