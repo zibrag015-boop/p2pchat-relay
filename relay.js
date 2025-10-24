@@ -4,48 +4,53 @@ const http = require('http');
 const server = http.createServer();
 const wss = new WebSocket.Server({ server });
 
-const clients = new Map(); // username -> {ws, username}
+const clients = new Map();
 
 wss.on('connection', (ws) => {
-    console.log('[' + new Date().toISOString() + '] Client connected');
+    const ts = new Date().toISOString();
+    console.log(`[${ts}] Client connected`);
     let username = null;
 
     ws.on('message', (message) => {
         const text = message.toString().trim();
+        const ts = new Date().toISOString();
         
         if (text.startsWith('USER:')) {
             username = text.substring(5);
             clients.set(username, { ws, username });
-            console.log(`[USER] ${username} registered`);
+            console.log(`[${ts}] [USER] ${username} registered`);
             ws.send('CONNECTED\n');
         } 
         else if (text.startsWith('MSG:')) {
             const msg = text.substring(4);
-            console.log(`[MSG] ${username}: ${msg.substring(0, 50)}...`);
+            console.log(`[${ts}] [RECEIVED] FROM: ${username}`);
+            console.log(`[${ts}] [RECEIVED] MSG: ${msg.substring(0, 50)}...`);
             
-            // ✅ Ретранслируем ТОЛЬКО текст
             clients.forEach((client, name) => {
                 if (client.ws.readyState === WebSocket.OPEN && name !== username) {
-                    console.log(`[MSG] Forwarding to ${name}`);
-                    client.ws.send(message);
+                    console.log(`[${ts}] [SENT] TO: ${name}`);
+                    console.log(`[${ts}] [SENT] MSG: ${msg.substring(0, 50)}...`);
+                    client.ws.send('MSG:' + msg + '\n');  // ✅ Отправляет текстом
                 }
             });
         }
     });
 
     ws.on('close', () => {
+        const ts = new Date().toISOString();
         if (username) {
             clients.delete(username);
-            console.log(`[CLOSE] ${username} disconnected`);
+            console.log(`[${ts}] [CLOSE] ${username} disconnected`);
         }
     });
 
     ws.on('error', (error) => {
-        console.error(`[ERROR] ${error.message}`);
+        const ts = new Date().toISOString();
+        console.error(`[${ts}] [ERROR] ${error.message}`);
     });
 });
 
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-    console.log(`[START] WebSocket server running on port ${PORT}`);
+    console.log(`[${new Date().toISOString()}] [START] WebSocket server running on port ${PORT}`);
 });
