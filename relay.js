@@ -1,44 +1,59 @@
-﻿const http = require("http");
-const WebSocket = require("ws");
+﻿const WebSocket = require('ws');
+const http = require('http');
 
-const PORT = process.env.PORT || 8080;
-const clients = new Map();
-
-const server = http.createServer((req, res) => {
-    res.writeHead(200);
-    res.end("Relay Running");
-});
-
+const server = http.createServer();
 const wss = new WebSocket.Server({ server });
 
-wss.on("connection", (ws) => {
-    console.log("Client connected");
+const clients = new Map(); // username -> {ws, username}
+
+wss.on('connection', (ws) => {
+    console.log('[' + new Date().toISOString() + '] Client connected');
     let username = null;
-    
-    ws.on("message", (data) => {
-        const msg = data.toString().trim();
+
+    ws.on('message', (message) => {
+        const text = message.toString().trim();
         
-        if (msg.startsWith("USER:")) {
-            username = msg.substring(5);
-            clients.set(username, ws);
-            ws.send("CONNECTED");
-            return;
-        }
-        
-        if (msg.startsWith("MSG:")) {
-            clients.forEach((client, user) => {
-                if (user !== username && client.readyState === WebSocket.OPEN) {
-                    client.send(msg);
+        if (text.startsWith('USER:')) {
+            username = text.substring(5);
+            clients.set(username, { ws, username });
+            console.log(`[USER] ${username} registered`);
+            ws.send('CONNECTED\n');
+        } 
+        // ✅ НОВОЕ: поддержка аудио по частям
+        else if (text.startsWith('AUDIO_START:') || 
+                 text.startsWith('AUDIO_CHUNK:') || 
+                 text.startsWith('AUDIO_END')) {
+            console.log(`[AUDIO] Forwarding: ${text.substring(0, 50)}...`);
+            clients.forEach((client, name) => {
+                if (client.ws.readyState === WebSocket.OPEN && name !== username) {
+                    client.ws.send(message);  // ✅ Отправляем оригинальное сообщение
+                }
+            });
+        } 
+        else if (text.startsWith('MSG:')) {
+            const msg = text.substring(4);
+            console.log(`[MSG] ${username}: ${msg.substring(0, 50)}...`);
+            clients.forEach((client, name) => {
+                if (client.ws.readyState === WebSocket.OPEN && name !== username) {
+                    client.ws.send(message);
                 }
             });
         }
     });
-    
-    ws.on("close", () => {
-        if (username) clients.delete(username);
+
+    ws.on('close', () => {
+        if (username) {
+            clients.delete(username);
+            console.log(`[CLOSE] ${username} disconnected`);
+        }
+    });
+
+    ws.on('error', (error) => {
+        console.error(`[ERROR] ${error.message}`);
     });
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-    console.log(`WebSocket relay on port ${PORT}`);
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => {
+    console.log(`[START] WebSocket server running on port ${PORT}`);
 });
