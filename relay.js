@@ -6,9 +6,11 @@ const wss = new WebSocket.Server({ server });
 
 const clients = new Map();
 
+console.log('[START] WebSocket server running on port 10000');
+
 wss.on('connection', (ws) => {
-    const ts = new Date().toISOString();
-    console.log(`[${ts}] Client connected`);
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] Client connected`);
     let username = null;
 
     ws.on('message', (message) => {
@@ -26,11 +28,12 @@ wss.on('connection', (ws) => {
             console.log(`[${ts}] [RECEIVED] FROM: ${username}`);
             console.log(`[${ts}] [RECEIVED] MSG: ${msg.substring(0, 50)}...`);
             
+            // ✅ НОВОЕ: Отправляем сообщение со username через |||
             clients.forEach((client, name) => {
                 if (client.ws.readyState === WebSocket.OPEN && name !== username) {
                     console.log(`[${ts}] [SENT] TO: ${name}`);
                     console.log(`[${ts}] [SENT] MSG: ${msg.substring(0, 50)}...`);
-                    client.ws.send('MSG:' + msg + '\n');  // ✅ Отправляет текстом
+                    client.ws.send('MSG:' + msg + '\n');  // msg уже содержит username|||content
                 }
             });
         }
