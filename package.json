@@ -1,0 +1,8 @@
+{
+  "name": "p2pchat-relay",
+  "version": "1.0.0",
+  "main": "relay-server-https.js",
+  "scripts": {
+    "start": "node relay-server-https.js"
+  }
+}
