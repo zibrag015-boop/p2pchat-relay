@@ -13,7 +13,7 @@ const offlineMessages = new Map(); // { username: [{ from, content, timestamp, e
 const MESSAGE_STORAGE_TIME = 86400 * 1000; // 24 часа в миллисекундах
 
 console.log('╔════════════════════════════════════════════════════════════╗');
-console.log('║  🚀 P2P CHAT RELAY SERVER v2.0 - STARTING UP...         ║');
+console.log('║  🚀 P2P CHAT RELAY SERVER v2.1 - STARTING UP...         ║');
 console.log('╚════════════════════════════════════════════════════════════╝\n');
 
 // ═══════════════════════════════════════════════════════════════════
@@ -39,7 +39,7 @@ wss.on('connection', (ws, req) => {
             }
 
             // ═══════════════════════════════════════════════════════════════════
-            // 1️⃣ РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЯ
+            // 1️⃣ РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЯ (✅ ИСПРАВЛЕНО - БЕЗ ЗАКРЫТИЯ СТАРЫХ!)
             // ═══════════════════════════════════════════════════════════════════
             if (message.startsWith('USER:')) {
                 username = message.substring(5).trim();
@@ -49,17 +49,12 @@ wss.on('connection', (ws, req) => {
                     return;
                 }
 
-                // Проверяем, не зарегистрирован ли уже
-                if (users.has(username)) {
-                    console.log(`[⚠️] ${username} уже онлайн, отключаем старое соединение`);
-                    users.get(username).close();
-                }
-
+                // ✅ ПРОСТО ДОБАВЛЯЕМ В MAP (РАЗРЕШАЕМ НЕСКОЛЬКО ПОЛЬЗОВАТЕЛЕЙ!)
                 users.set(username, ws);
                 isAuthenticated = true;
                 
                 console.log(`[✅] ${username} зарегистрирован`);
-                console.log(`    📍 Онлайн: ${Array.from(users.keys()).join(', ')}`);
+                console.log(`    📍 Онлайн (${users.size}): ${Array.from(users.keys()).join(', ')}`);
 
                 // Отправляем подтверждение
                 ws.send('CONNECTED');
@@ -175,7 +170,6 @@ wss.on('connection', (ws, req) => {
                                     msgs.splice(index, 1);
                                     console.log(`[🗑️] Удалили истёкшее сообщение от ${sender} -> ${recipient}`);
                                     
-                                    // Если нет больше сообщений, удаляем запись
                                     if (msgs.length === 0) {
                                         offlineMessages.delete(recipient);
                                     }
@@ -183,19 +177,20 @@ wss.on('connection', (ws, req) => {
                             }
                         }, storageTime);
 
-                        // Сохраняем ID таймера для возможности отмены
-                        if (!offlineMessages.get(recipient).timeouts) {
-                            Object.defineProperty(offlineMessages.get(recipient), 'timeouts', {
-                                value: [], configurable: true
-                            });
-                        }
-                        offlineMessages.get(recipient).timeouts.push(timeoutId);
-
                     } else {
                         console.log(`    ❌ ${recipient} ОФЛАЙН - СООБЩЕНИЕ ПОТЕРЯНО (хранение отключено)`);
                     }
                 }
 
+                return;
+            }
+
+            // ═══════════════════════════════════════════════════════════════════
+            // 5️⃣ HEARTBEAT (PING/PONG)
+            // ═══════════════════════════════════════════════════════════════════
+            if (message === 'PING') {
+                ws.send('PONG');
+                console.log(`[💓] ${username}: ping -> pong`);
                 return;
             }
 
@@ -215,7 +210,7 @@ wss.on('connection', (ws, req) => {
         if (username && isAuthenticated) {
             users.delete(username);
             console.log(`\n[-] ${username} отключился`);
-            console.log(`    📍 Онлайн: ${Array.from(users.keys()).join(', ') || 'никого'}`);
+            console.log(`    📍 Онлайн (${users.size}): ${Array.from(users.keys()).join(', ') || 'никого'}`);
 
             // Оповещаем остальных об изменении списка
             broadcastUsersList();
@@ -253,7 +248,7 @@ setInterval(() => {
     const totalOfflineMessages = Array.from(offlineMessages.values())
         .reduce((sum, msgs) => sum + msgs.length, 0);
 
-    console.log(`\n[📊] СТАТИСТИКА (каждые 30сек):`);
+    console.log(`\n[📊] СТАТИСТИКА:`);
     console.log(`    Онлайн: ${onlineCount} пользователей`);
     console.log(`    Офлайн: ${offlineCount} пользователей с сообщениями`);
     console.log(`    В очереди: ${totalOfflineMessages} сообщений`);
@@ -266,16 +261,18 @@ setInterval(() => {
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n╔════════════════════════════════════════════════════════════╗`);
     console.log(`║                                                            ║`);
-    console.log(`║           ✅ RELAY SERVER READY TO ACCEPT CLIENTS         ║`);
+    console.log(`║           ✅ RELAY SERVER READY - UNLIMITED USERS          ║`);
     console.log(`║                                                            ║`);
     console.log(`║  Port: ${PORT.toString().padEnd(50)}║`);
     console.log(`║  WebSocket: ws://0.0.0.0:${PORT.toString().padEnd(42)}║`);
     console.log(`║                                                            ║`);
     console.log(`║  Features:                                                 ║`);
+    console.log(`║  ✓ UNLIMITED concurrent users                              ║`);
     console.log(`║  ✓ Offline message storage (24 hours)                      ║`);
-    console.log(`║  ✓ End-to-End Encryption (relay doesn't decrypt)          ║`);
+    console.log(`║  ✓ End-to-End Encryption                                   ║`);
     console.log(`║  ✓ WebSocket routing                                       ║`);
     console.log(`║  ✓ User presence broadcasting                              ║`);
+    console.log(`║  ✓ Heartbeat monitoring                                    ║`);
     console.log(`║                                                            ║`);
     console.log(`╚════════════════════════════════════════════════════════════╝\n`);
 });
@@ -287,7 +284,6 @@ server.listen(PORT, '0.0.0.0', () => {
 process.on('SIGINT', () => {
     console.log('\n[🛑] SHUTTING DOWN SERVER...');
     
-    // Закрываем все соединения
     for (const [username, ws] of users) {
         ws.close();
         console.log(`[-] Закрыли соединение для ${username}`);
@@ -300,14 +296,12 @@ process.on('SIGINT', () => {
         process.exit(0);
     });
 
-    // Принудительное завершение через 5 сек
     setTimeout(() => {
         console.log('[⚠️] Forced shutdown');
         process.exit(1);
     }, 5000);
 });
 
-// Обработка необработанных ошибок
 process.on('uncaughtException', (error) => {
     console.error('[❌] UNCAUGHT EXCEPTION:', error);
 });
