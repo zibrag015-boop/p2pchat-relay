@@ -2,18 +2,74 @@
 const http = require('http');
 
 const PORT = process.env.PORT || 8080;
-const server = http.createServer();
+const server = http.createServer((req, res) => {
+    // ✅ HEALTH CHECK для Render.com
+    if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            status: 'ok',
+            uptime: process.uptime(),
+            onlineUsers: users.size,
+            offlineMessages: Array.from(offlineMessages.values()).reduce((sum, m) => sum + m.length, 0),
+            timestamp: new Date().toISOString()
+        }));
+        return;
+    }
+
+    // Главная страница
+    if (req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`
+            <html>
+                <head>
+                    <title>P2P Chat Relay Server v2.1</title>
+                    <style>
+                        body { font-family: Arial; margin: 40px; background: #f0f0f0; }
+                        .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                        h1 { color: #2c3e50; }
+                        .stat { margin: 10px 0; font-size: 16px; }
+                        .ok { color: green; font-weight: bold; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>🚀 P2P Chat Relay Server v2.1</h1>
+                        <div class="stat">Status: <span class="ok">✅ ONLINE</span></div>
+                        <div class="stat">Online Users: <strong>${users.size}</strong></div>
+                        <div class="stat">Offline Messages: <strong>${Array.from(offlineMessages.values()).reduce((sum, m) => sum + m.length, 0)}</strong></div>
+                        <div class="stat">Uptime: <strong>${Math.floor(process.uptime())}s</strong></div>
+                        <hr>
+                        <p>WebSocket: <code>wss://p2pchat-relay.onrender.com</code></p>
+                        <p><small>Powered by Node.js</small></p>
+                    </div>
+                </body>
+            </html>
+        `);
+        return;
+    }
+
+    res.writeHead(404);
+    res.end('Not Found');
+});
+
 const wss = new WebSocket.Server({ server });
 
 // ✅ ХРАНИЛИЩЕ
 const users = new Map();           // { username: websocket }
 const offlineMessages = new Map(); // { username: [{ from, content, timestamp, expiry }] }
+const userStats = new Map();       // { username: { messageCount, lastReset } } - для rate limiting
+const blacklist = new Map();       // { username: blacklistUntil } - для блокировки спамеров
 
 // ✅ КОНСТАНТЫ
-const MESSAGE_STORAGE_TIME = 86400 * 1000; // 24 часа в миллисекундах
+const MESSAGE_STORAGE_TIME = 86400 * 1000;     // 24 часа в миллисекундах
+const MAX_MESSAGE_SIZE = 100 * 1024;            // 100 KB максимум
+const MAX_MESSAGES_PER_SECOND = 100;           // 100 сообщений в сек на пользователя
+const RATE_LIMIT_WINDOW = 1000;                // 1 секунда
+const BLACKLIST_DURATION = 60 * 1000;          // 1 минута блокировки
 
 console.log('╔════════════════════════════════════════════════════════════╗');
 console.log('║  🚀 P2P CHAT RELAY SERVER v2.1 - STARTING UP...         ║');
+console.log('║  ✅ WITH HEALTH CHECK, RATE LIMITING & SIZE VALIDATION   ║');
 console.log('╚════════════════════════════════════════════════════════════╝\n');
 
 // ═══════════════════════════════════════════════════════════════════
@@ -30,6 +86,13 @@ wss.on('connection', (ws, req) => {
 
     ws.on('message', (data) => {
         try {
+            // ✅ Проверка размера сообщения
+            if (data.length > MAX_MESSAGE_SIZE) {
+                console.log(`[❌] ${clientIp}: Message too large (${data.length} bytes)`);
+                ws.send('ERROR:Message exceeds maximum size of 100KB');
+                return;
+            }
+
             const message = data.toString().trim();
             
             if (!isAuthenticated && !message.startsWith('USER:')) {
@@ -39,7 +102,7 @@ wss.on('connection', (ws, req) => {
             }
 
             // ═══════════════════════════════════════════════════════════════════
-            // 1️⃣ РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЯ (✅ ИСПРАВЛЕНО - БЕЗ ЗАКРЫТИЯ СТАРЫХ!)
+            // 1️⃣ РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЯ
             // ═══════════════════════════════════════════════════════════════════
             if (message.startsWith('USER:')) {
                 username = message.substring(5).trim();
@@ -49,9 +112,25 @@ wss.on('connection', (ws, req) => {
                     return;
                 }
 
-                // ✅ ПРОСТО ДОБАВЛЯЕМ В MAP (РАЗРЕШАЕМ НЕСКОЛЬКО ПОЛЬЗОВАТЕЛЕЙ!)
+                // ✅ Проверка черного списка
+                if (blacklist.has(username) && Date.now() < blacklist.get(username)) {
+                    ws.send('ERROR:You are temporarily blocked');
+                    console.log(`[🚫] ${username} попытался подключиться в то время как в черном списке`);
+                    return;
+                }
+
+                // ✅ Удаляем из черного списка если истёк срок
+                if (blacklist.has(username) && Date.now() >= blacklist.get(username)) {
+                    blacklist.delete(username);
+                }
+
                 users.set(username, ws);
                 isAuthenticated = true;
+                
+                // Инициализируем статистику
+                if (!userStats.has(username)) {
+                    userStats.set(username, { messageCount: 0, lastReset: Date.now() });
+                }
                 
                 console.log(`[✅] ${username} зарегистрирован`);
                 console.log(`    📍 Онлайн (${users.size}): ${Array.from(users.keys()).join(', ')}`);
@@ -77,6 +156,29 @@ wss.on('connection', (ws, req) => {
                 }
 
                 return;
+            }
+
+            // ✅ RATE LIMITING
+            if (username) {
+                const stats = userStats.get(username) || { messageCount: 0, lastReset: Date.now() };
+                const now = Date.now();
+
+                if (now - stats.lastReset > RATE_LIMIT_WINDOW) {
+                    stats.messageCount = 0;
+                    stats.lastReset = now;
+                }
+
+                stats.messageCount++;
+                userStats.set(username, stats);
+
+                if (stats.messageCount > MAX_MESSAGES_PER_SECOND) {
+                    console.log(`[⚠️] ${username}: Rate limit exceeded!`);
+                    ws.send('ERROR:Rate limit exceeded. Max 100 messages per second');
+                    
+                    // Добавляем в черный список
+                    blacklist.set(username, Date.now() + BLACKLIST_DURATION);
+                    return;
+                }
             }
 
             // ═══════════════════════════════════════════════════════════════════
@@ -162,7 +264,7 @@ wss.on('connection', (ws, req) => {
                         console.log(`    💾 Всего офлайн сообщений для ${recipient}: ${offlineMessages.get(recipient).length}`);
 
                         // Запланируем удаление сообщения по TTL
-                        const timeoutId = setTimeout(() => {
+                        setTimeout(() => {
                             const msgs = offlineMessages.get(recipient);
                             if (msgs) {
                                 const index = msgs.findIndex(m => m.expiry === expiry);
@@ -247,11 +349,14 @@ setInterval(() => {
     const offlineCount = offlineMessages.size;
     const totalOfflineMessages = Array.from(offlineMessages.values())
         .reduce((sum, msgs) => sum + msgs.length, 0);
+    const blacklistCount = Array.from(blacklist.values()).filter(exp => Date.now() < exp).length;
 
     console.log(`\n[📊] СТАТИСТИКА:`);
     console.log(`    Онлайн: ${onlineCount} пользователей`);
     console.log(`    Офлайн: ${offlineCount} пользователей с сообщениями`);
     console.log(`    В очереди: ${totalOfflineMessages} сообщений`);
+    console.log(`    В черном списке: ${blacklistCount} пользователей`);
+    console.log(`    Uptime: ${Math.floor(process.uptime())}s`);
 }, 30000);
 
 // ═══════════════════════════════════════════════════════════════════
@@ -264,7 +369,8 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`║           ✅ RELAY SERVER READY - UNLIMITED USERS          ║`);
     console.log(`║                                                            ║`);
     console.log(`║  Port: ${PORT.toString().padEnd(50)}║`);
-    console.log(`║  WebSocket: ws://0.0.0.0:${PORT.toString().padEnd(42)}║`);
+    console.log(`║  WebSocket: wss://p2pchat-relay.onrender.com               ║`);
+    console.log(`║  Health Check: https://p2pchat-relay.onrender.com/health   ║`);
     console.log(`║                                                            ║`);
     console.log(`║  Features:                                                 ║`);
     console.log(`║  ✓ UNLIMITED concurrent users                              ║`);
@@ -273,6 +379,9 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`║  ✓ WebSocket routing                                       ║`);
     console.log(`║  ✓ User presence broadcasting                              ║`);
     console.log(`║  ✓ Heartbeat monitoring                                    ║`);
+    console.log(`║  ✓ Rate limiting & Spam protection                         ║`);
+    console.log(`║  ✓ Message size validation (100KB max)                     ║`);
+    console.log(`║  ✓ Health check endpoint                                   ║`);
     console.log(`║                                                            ║`);
     console.log(`╚════════════════════════════════════════════════════════════╝\n`);
 });
@@ -290,6 +399,7 @@ process.on('SIGINT', () => {
     }
     users.clear();
     offlineMessages.clear();
+    blacklist.clear();
 
     server.close(() => {
         console.log('[✅] SERVER STOPPED');
@@ -310,4 +420,5 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('[❌] UNHANDLED REJECTION at:', promise, 'reason:', reason);
 });
 
-module.exports = { users, offlineMessages };
+module.exports = { users, offlineMessages, userStats, blacklist };
+

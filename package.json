@@ -1,19 +1,22 @@
 {
   "name": "p2pchat-relay",
-  "version": "2.0.0",
-  "description": "P2P Chat Relay Server with Offline Message Storage",
+  "version": "2.1.0",
+  "description": "P2P Chat Relay Server with Offline Message Storage, Rate Limiting & Health Check",
   "main": "relay.js",
   "engines": {
     "node": "18.x"
   },
   "scripts": {
     "start": "node relay.js",
-    "dev": "node relay.js"
+    "dev": "nodemon relay.js"
   },
-  "keywords": ["p2p", "chat", "relay", "websocket"],
+  "keywords": ["p2p", "chat", "relay", "websocket", "encryption"],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
   }
 }
